@@ -202,6 +202,7 @@ class Retriever:
             self.embedding_function.eval()
 
     def get_relevant_documents(self, question, k=32, id_only=False, **kwarg):
+        
         assert type(question) == str
         question = [question]
 
@@ -213,42 +214,18 @@ class Retriever:
             indices = [{"source": '_'.join(h.docid.split('_')[:-1]), "index": eval(h.docid.split('_')[-1])} for h in hits]
         else:
             with torch.no_grad():
-                if "model" in kwarg and "tokenizer" in kwarg:
-                    # Lexical semantic retrieval
-                    model = kwarg["model"]
-                    tokenizer = kwarg["tokenizer"]
-                    texts = self.idx2txt([{"source": fname.replace(".jsonl", ""), "index": i} 
-                                        for fname in os.listdir(self.chunk_dir) 
-                                        for i in range(len(open(os.path.join(self.chunk_dir, fname)).read().strip().split('\n')))])
-                    pairs = [[question[0], doc['content']] for doc in texts]
-                    encoded = tokenizer(
-                        pairs,
-                        truncation=True,
-                        padding=True,
-                        return_tensors="pt",
-                        max_length=512,
-                    )
-                    if torch.cuda.is_available():
-                        encoded = {k: v.cuda() for k, v in encoded.items()}
-                    logits = model(**encoded).logits
-                    scores = logits[:, 2].tolist()  # Use entailment score
-                    sorted_idx = np.argsort(scores)[::-1]
-                    texts = [texts[i] for i in sorted_idx[:k]]
-                    scores = [scores[i] for i in sorted_idx[:k]]
-                    return texts, scores
-                else:
-                    # Regular dense retrieval
-                    query_embed = self.embedding_function.encode(question, **kwarg)
-                    res_ = self.index.search(query_embed, k=k)
-                    ids = ['_'.join([self.metadatas[i]["source"], str(self.metadatas[i]["index"])]) for i in res_[1][0]]
-                    indices = [self.metadatas[i] for i in res_[1][0]]
+                query_embed = self.embedding_function.encode(question, **kwarg)
+            res_ = self.index.search(query_embed, k=k)
+            ids = ['_'.join([self.metadatas[i]["source"], str(self.metadatas[i]["index"])]) for i in res_[1][0]]
+            indices = [self.metadatas[i] for i in res_[1][0]]
 
         scores = res_[0][0].tolist()
         
         if id_only:
             return [{"id":i} for i in ids], scores
         else:
-            return self.idx2txt(indices), scores
+            result_texts = self.idx2txt(indices)
+            return result_texts, scores
 
     def idx2txt(self, indices): # return List of Dict of str
         '''
@@ -275,9 +252,13 @@ class RetrievalSystem:
         else:
             self.docExt = None
         if self.retriever_name == "Hierarchical":
+            print("start importing retrievers")
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
+            print("import finish")
             self.retrieval_model = AutoModelForSequenceClassification.from_pretrained("facebook/bart-large-mnli", cache_dir=db_dir)
+            print("retriever_mode ready")
             self.retrieval_tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-mnli", cache_dir=db_dir)
+            print("tokenizer ready")
             if torch.cuda.is_available():
                 self.retrieval_model = self.retrieval_model.cuda()
             self.retrieval_model.eval()
@@ -286,6 +267,11 @@ class RetrievalSystem:
         '''
             Given questions, return the relevant snippets from the corpus
         '''
+        # Check if this is Hierarchical retrieval
+        if self.retriever_name == "Hierarchical":
+            return self.retrieve_hierarchical(question, k=k, rrf_k=rrf_k, id_only=id_only)
+        
+        # Standard retrieval logic
         assert type(question) == str
 
         output_id_only = id_only
@@ -299,26 +285,73 @@ class RetrievalSystem:
             k_ = max(k * 2, 100)
         else:
             k_ = k
+        
         for i in range(len(retriever_names[self.retriever_name])):
             texts.append([])
             scores.append([])
             for j in range(len(corpus_names[self.corpus_name])):
-                if self.retriever_name == "Hierarchical":
-                    t, s = self.retrievers[i][j].get_relevant_documents(
-                        model=self.retrieval_model,
-                        tokenizer=self.retrieval_tokenizer,
-                        question=question, 
-                        k=k_,
-                        id_only=id_only
-                    )
-                else:
-                    t, s = self.retrievers[i][j].get_relevant_documents(question, k=k_, id_only=id_only)
+                t, s = self.retrievers[i][j].get_relevant_documents(question, k=k_, id_only=id_only)
                 texts[-1].append(t)
                 scores[-1].append(s)
+        
         texts, scores = self.merge(texts, scores, k=k, rrf_k=rrf_k)
+        
         if self.cache:
             texts = self.docExt.extract(texts)
+        
         return texts, scores
+
+    def retrieve_hierarchical(self, question, k=32, rrf_k=100, id_only=False, sparse_dense_ratio=0.5):
+        '''
+        Hierarchical retrieval: BM25 + Cross-encoder reranking
+        '''
+        assert type(question) == str
+
+        output_id_only = id_only
+        if self.cache:
+            id_only = True
+
+        # Step 1: Get BM25 candidates (more than final k)
+        candidate_k = max(k * 3, 100)
+        bm25_texts = []
+        bm25_scores = []
+        
+        for i in range(len(retriever_names[self.retriever_name])):
+            for j in range(len(corpus_names[self.corpus_name])):
+                if "bm25" in retriever_names[self.retriever_name][i].lower():
+                    t_bm25, s_bm25 = self.retrievers[i][j].get_relevant_documents(question, k=candidate_k, id_only=id_only)
+                    bm25_texts.extend(t_bm25)
+                    bm25_scores.extend(s_bm25)
+
+        if not bm25_texts:
+            return self.retrieve(question, k=k, rrf_k=rrf_k, id_only=output_id_only)
+
+        # Step 2: Cross-encoder reranking
+        pairs = [[question, doc['content']] for doc in bm25_texts]
+        
+        with torch.no_grad():
+            encoded = self.retrieval_tokenizer(
+                pairs,
+                truncation=True,
+                padding=True,
+                return_tensors="pt",
+                max_length=512,
+            )
+            if torch.cuda.is_available():
+                encoded = {k: v.cuda() for k, v in encoded.items()}
+            
+            logits = self.retrieval_model(**encoded).logits
+            dense_scores = logits[:, 2].tolist()  # Use entailment score
+
+        # Step 3: Combine scores (optional) or just use dense scores
+        sorted_idx = np.argsort(dense_scores)[::-1]
+        final_texts = [bm25_texts[i] for i in sorted_idx[:k]]
+        final_scores = [dense_scores[i] for i in sorted_idx[:k]]
+
+        if self.cache:
+            final_texts = self.docExt.extract(final_texts)
+
+        return final_texts, final_scores
 
     def merge(self, texts, scores, k=32, rrf_k=100):
         '''
@@ -349,6 +382,7 @@ class RetrievalSystem:
                         "id": item["id"],
                         "title": item.get("title", ""),
                         "content": item.get("content", ""),
+                        "PMID": item.get("PMID", ""),
                         "score": 1 / (rrf_k + j + 1),
                         "count": 1
                         }
@@ -357,7 +391,7 @@ class RetrievalSystem:
             texts = texts[0][:k]
             scores = scores[0][:k]
         else:
-            texts = [dict((key, item[1][key]) for key in ("id", "title", "content")) for item in RRF_list[:k]]
+            texts = [dict((key, item[1][key]) for key in ("id", "title", "content", "PMID")) for item in RRF_list[:k]]
             scores = [item[1]["score"] for item in RRF_list[:k]]
         return texts, scores
     

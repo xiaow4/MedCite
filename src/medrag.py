@@ -1,10 +1,7 @@
 import os
 import re
 import json
-import tqdm
 import torch
-import time
-import argparse
 import transformers
 from transformers import AutoTokenizer
 import openai
@@ -12,8 +9,8 @@ from transformers import StoppingCriteria, StoppingCriteriaList
 import tiktoken
 import sys
 sys.path.append("src")
-from utils1 import RetrievalSystem, DocExtracter
-from template1 import *
+from utils import RetrievalSystem, DocExtracter
+from template import *
 
 from config import config
 
@@ -215,9 +212,6 @@ class MedRAG:
                 assert self.retrieval_system is not None
                 retrieved_snippets, scores = self.retrieval_system.retrieve(question, k=k, rrf_k=rrf_k)
 
-            # print(len(retrieved_snippets))
-            # print(retrieved_snippets[0])
-
             contexts = ["Document [{:d}] (Title: {:s}) {:s}".format(idx, retrieved_snippets[idx]["title"], retrieved_snippets[idx]["content"]) for idx in range(len(retrieved_snippets))]
             if len(contexts) == 0:
                 contexts = [""]
@@ -248,7 +242,6 @@ class MedRAG:
         else:
             for context in contexts:
                 prompt_medrag = self.templates["medrag_prompt"].render(context=context, question=question, options=options)
-                # print(prompt_medrag)
                 messages=[
                         {"role": "system", "content": self.templates["medrag_system"]},
                         {"role": "user", "content": prompt_medrag}
@@ -405,7 +398,7 @@ class MedRAG:
                 continue
         return messages[-1]["content"], messages
 
-    def add_citation(self, question, answer='', snippets=[], snippets_ids=None, scores=[], k=3, rrf_k=100, rerank=False, statement_pairs=None):
+    def add_citation(self, snippets=[], scores=[], k=3, rrf_k=100, citation_rerank=False, statement_pairs=None):
         """
         Add citations to statements based on retrieved documents.
         
@@ -417,7 +410,7 @@ class MedRAG:
             scores: Relevance scores for snippets
             k: Number of top documents to retrieve per statement
             rrf_k: Reciprocal rank fusion parameter
-            rerank: Whether to use LLM reranking
+            citation_rerank: Whether to use LLM reranking
             statement_pairs: Pre-processed statement pairs (citations, statement text)
             
         Returns:
@@ -445,17 +438,6 @@ class MedRAG:
             statement_docs = []
             for _, statement in statement_pairs:
                 assert self.retrieval_system is not None
-                # retrieved_snippets, new_scores = (
-                #     self.retrieval_system.retrieve_ls(
-                #         model=self.retrieval_model,
-                #         tokenizer=self.retrieval_tokenizer,
-                #         question=statement, 
-                #         k=k,
-                #         rrf_k=rrf_k,
-                #         id_only=False
-                #     ) if self.retriever_name == "lexical_semantic"
-                #     else self.retrieval_system.retrieve(statement, k=k, rrf_k=rrf_k)
-                # )
                 retrieved_snippets, new_scores = self.retrieval_system.retrieve(statement, k=k, rrf_k=rrf_k)
                 
                 # Format retrieved snippets into contexts
@@ -472,7 +454,7 @@ class MedRAG:
 
         # Process each statement pair
         for idx, (_, statement) in enumerate(statement_pairs):
-            if rerank:
+            if citation_rerank:
                 # Get document contexts for current statement
                 docs = contexts if len(snippets) > 0 else statement_docs[idx]
                 
@@ -483,8 +465,6 @@ class MedRAG:
                     {"role": "user", "content": prompt_post}
                 ]
                 ans = self.generate(messages)
-                prefix = 'assistant<|end_header_id|>'
-                ans = ans.rsplit(prefix, 1)[1]
                 doc_ids = re.findall(r'\d+', ans)
             else:
                 # Use sequential document IDs
@@ -501,14 +481,14 @@ class MedRAG:
             
         return post_pairs, post_snippets, post_scores
 
-    def medcite_answer(self, question, options=None, k1=32, k2=3, rrf_k=100, save_dir=None, snippets=None, snippets_ids=None, **kwargs):
+    def medcite_answer(self, question, options=None, k1=32, k2=3, rrf_k=100, save_dir=None, snippets=None, snippets_ids=None, citation_rerank=False, **kwargs):
         """
         Enhanced version of medrag_answer that includes citation processing.
         
         Args:
             Same as medrag_answer, plus:
             citation_mode: Controls how citations are handled. Options are:
-                - "none": No citations (regular medrag_answer)
+                - None: No citations (regular medrag_answer)
                 - "pre_only": Only in-answer generation citations
                 - "post_only": Only post-answer citations (default)
                 - "both": Both in-answer and post-answer citations
@@ -520,23 +500,23 @@ class MedRAG:
             - Relevance scores
         """
         # Get initial answer using appropriate prompt based on citation mode
-        if self.citation_mode in ["pre_only", "both"]:
+        if self.citation_mode != "post_only":
             original_prompt = self.templates["medrag_prompt"]
             self.templates["medrag_prompt"] = self.templates["medcite_pre_prompt"]
-            try:
-                answer, snippets, scores = self.medrag_answer(  
-                    question=question, 
-                    options=options, 
-                    k=k1, 
-                    rrf_k=rrf_k,
-                    snippets=snippets,
-                    snippets_ids=snippets_ids,
-                    **kwargs
-                )
-            finally:
-                # self.templates["medrag_prompt"] = original_prompt
-                pass
+            
+            clean_kwargs = {k: v for k, v in kwargs.items() if k not in ['k', 'rrf_k', 'snippets', 'snippets_ids']}
+            answer, snippets, scores = self.medrag_answer(  
+                question=question, 
+                options=options, 
+                k=k1, 
+                rrf_k=rrf_k,
+                snippets=snippets,
+                snippets_ids=snippets_ids,
+                **clean_kwargs
+            )
+            
         else:
+            clean_kwargs = {k: v for k, v in kwargs.items() if k not in ['k', 'rrf_k', 'snippets', 'snippets_ids']}
             answer, snippets, scores = self.medrag_answer(
                 question=question, 
                 options=options, 
@@ -544,9 +524,8 @@ class MedRAG:
                 rrf_k=rrf_k,
                 snippets=snippets,
                 snippets_ids=snippets_ids,
-                **kwargs
+                **clean_kwargs
             )
-        # print(answer)
 
         # Extract answer components
         prefix = 'assistant<|end_header_id|> '
@@ -572,10 +551,6 @@ class MedRAG:
             "post_snippets": [],
             "post_scores": []
         }
-        # print("first pass result:\n", result)
-        # Return early if no citation processing needed
-        if self.citation_mode == "none":
-            return result, snippets, scores
 
         # Process citations in the answer text
         num_snippets = len(snippets)
@@ -592,8 +567,6 @@ class MedRAG:
             else:
                 statement_pairs.append(([], statement))
 
-        # print("statement_pairs:\n", statement_pairs)
-
         # Get cited documents
         cited_docs = {}
         for doc_ids, _ in statement_pairs:
@@ -606,8 +579,6 @@ class MedRAG:
                         'pmid': doc['PMID']
                     }
 
-        # print("cited_docs:\n", cited_docs)
-
         # Update result with initial citations
         result.update({
             "statement_pairs": statement_pairs,
@@ -616,21 +587,16 @@ class MedRAG:
             "merged_statement_pairs": [(list(map(str, doc_ids)), stmt) for doc_ids, stmt in statement_pairs]
         })
 
-        # print("processed first passresult:\n", result)
-
         # Return if only pre-citation processing needed
         if self.citation_mode == "pre_only":
             return result, snippets, scores
 
         # Get additional citations through post-processing
-        post_pairs, post_snippets, post_scores = self.add_citation(
-            question=question,
-            answer=answer_text,
-            rerank=False,
+        post_pairs, post_snippets, post_scores = self.add_citation( 
             snippets=[],
-            snippets_ids=[],
             scores=scores,
             k=k2,
+            citation_rerank=citation_rerank,
             statement_pairs=statement_pairs
         )
 
