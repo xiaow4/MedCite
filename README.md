@@ -1,10 +1,10 @@
 # MedCite Toolkit
 
-`MedCite` is an enhanced version of `MedRAG` that provides citation-enabled medical question answering with automatic reference generation and quality evaluation.
+`MedCite` is an enhanced version of [`MedRAG`](https://teddy-xionggz.github.io/benchmark-medical-rag/) that provides citation-enabled medical question answering with automatic reference generation and quality evaluation.
 
-[![Paper](https://img.shields.io/badge/paper-available-brightgreen)](https://aclanthology.org/2024.findings-acl.372/)
+<!-- [![Paper](https://img.shields.io/badge/paper-available-brightgreen)](https://aclanthology.org/2024.findings-acl.372/)
 [![Homepage](https://img.shields.io/badge/homepage-available-blue)](https://teddy-xionggz.github.io/benchmark-medical-rag/)
-[![Corpus](https://img.shields.io/badge/corpus-available-yellow)](https://huggingface.co/MedRAG)
+[![Corpus](https://img.shields.io/badge/corpus-available-yellow)](https://huggingface.co/MedRAG) -->
 
 ## News
 - (05/15/2025) Our paper has been accepted by ACL 2025 Findings!
@@ -30,20 +30,69 @@ MedCite extends MedRAG with advanced citation capabilities, automatically genera
 
 ## Usage
 
-Example medical question from [MMLU](https://github.com/hendrycks/test)
 ```python
 from src.medrag import MedRAG
 
-question = "A lesion causing compression of the facial nerve at the stylomastoid foramen will cause ipsilateral"
+question = "Are there microbes in human breast milk?"
 options = {
-    "A": "paralysis of the facial muscles.",
-    "B": "paralysis of the facial muscles and loss of taste.",
-    "C": "paralysis of the facial muscles, loss of taste and lacrimation.",
-    "D": "paralysis of the facial muscles, loss of taste, lacrimation and decreased salivation."
+    "A": "yes.",
+    "B": "no."
 }
 ```
 
-#### MedCite with Post-processing Citations (Default)
+#### Basic MedRAG (No Citations)
+```python
+medrag = MedRAG(
+    llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
+    rag=True, 
+    retriever_name="Hierarchical", 
+    corpus_name="PubMed", 
+    citation_mode=None  # Standard MedRAG without citations
+)
+
+result, snippets, scores = medrag.answer(
+    question=question, 
+    options=options, 
+    k=32
+)
+
+print(f"Answer: {result['answer']}")
+print(f"Answer choice: {result['answer_choice']}")
+
+# Example output:
+# Answer: "Yes, human breast milk contains microorganisms including beneficial bacteria that support infant health and immune development."
+# Answer choice: "A"
+```
+
+#### MedCite with Pre-generation Citations (Post-Retrieval Generation, PRG in the paper)
+```python
+medcite = MedRAG(
+    llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
+    rag=True, 
+    retriever_name="Hierarchical", 
+    corpus_name="PubMed", 
+    citation_mode="pre_only"  # Citations generated during answer creation
+)
+
+result, snippets, scores = medcite.answer(
+    question=question, 
+    options=options, 
+    k1=32
+)
+
+print(f"Answer with pre-generated citations: {result['answer']}")
+
+# Example output:
+# Answer with citations: "Yes, human breast milk contains a diverse community of microorganisms[1]. Research has identified various bacterial species that may support infant gut health[2][3]."
+# Answer choice: "A"
+# Cited documents: {
+#     "1": {"title": "The human milk microbiome", "content": "Human breast milk contains...", "pmid": "25825906"},
+#     "2": {"title": "Bacterial diversity in human milk", "content": "Lactobacillus species...", "pmid": "23398556"},
+#     "3": {"title": "Breast milk microbiome and health", "content": "Beneficial bacteria contribute...", "pmid": "27217095"}
+# }
+```
+
+#### MedCite with Post-processing Citations ((Post-Generation Citation, PGC in the paper))
 ```python
 medcite = MedRAG(
     llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
@@ -63,34 +112,11 @@ result, snippets, scores = medcite.answer(
 
 print(f"Answer with citations: {result['answer']}")
 print(f"Answer choice: {result['answer_choice']}")
-print(f"Cited documents: {len(result['cited_docs'])}")
+print(f"Cited documents: {result['cited_docs']}")
 
-# Example output:
-# Answer with citations: "A lesion causing compression of the facial nerve at the stylomastoid foramen will cause paralysis of the facial muscles[1]. This is supported by anatomical studies[2][3]."
-# Answer choice: "A"
-# Cited documents: 3
 ```
 
-#### MedCite with Pre-generation Citations
-```python
-medcite = MedRAG(
-    llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
-    rag=True, 
-    retriever_name="Hierarchical", 
-    corpus_name="PubMed", 
-    citation_mode="pre_only"  # Citations generated during answer creation
-)
-
-result, snippets, scores = medcite.answer(
-    question=question, 
-    options=options, 
-    k1=32
-)
-
-print(f"Answer with pre-generated citations: {result['answer']}")
-```
-
-#### MedCite with Both Pre and Post Citations
+#### MedCite with Both Pre and Post Citations (MedCite, Two-Pass Approach in the paper)
 ```python
 medcite = MedRAG(
     llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
@@ -111,131 +137,142 @@ result, snippets, scores = medcite.answer(
 print(f"Enhanced answer with comprehensive citations: {result['answer']}")
 ```
 
-#### MedCite with Different Retrievers
-```python
-# Using MedCPT retriever
-medcite_medcpt = MedRAG(
-    llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
-    rag=True, 
-    retriever_name="MedCPT", 
-    corpus_name="PubMed", 
-    citation_mode="post_only"
-)
+#### Citation Quality Evaluation
 
-# Using Hierarchical retriever (BM25 + Cross-encoder)
-medcite_hier = MedRAG(
-    llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
-    rag=True, 
-    retriever_name="Hierarchical", 
-    corpus_name="PubMed", 
-    citation_mode="post_only"
-)
+The MedCite toolkit includes a comprehensive evaluation framework for assessing citation quality and answer accuracy.
 
-# Using RRF-2 retriever (BM25 + MedCPT fusion)
-medcite_rrf = MedRAG(
-    llm_name="meta-llama/Meta-Llama-3-8B-Instruct", 
-    rag=True, 
-    retriever_name="RRF-2", 
-    corpus_name="PubMed", 
-    citation_mode="post_only"
-)
+**Command Line Evaluation:**
+```bash
+# Basic evaluation
+python src/eval.py --results_dir /path/to/results
+
+# Evaluate specific file range
+python src/eval.py --results_dir /path/to/results --start_idx 0 --end_idx 10
+
+# Use different evaluation model
+python src/eval.py --results_dir /path/to/results --eval_model "mistralai/Mistral-7B-Instruct-v0.3"
+
+# Verbose output with detailed information
+python src/eval.py --results_dir /path/to/results --verbose
+
+# Save results to JSON file
+python src/eval.py --results_dir /path/to/results --output evaluation_results.json
 ```
 
-#### Citation Quality Evaluation
+**Programmatic Evaluation:**
 ```python
-from src.eval import extract_statement_citation_pairs, run_llm_recall, run_llm_prec
-from transformers import pipeline
+from src.eval import MedCiteEvaluator
 
-# Initialize evaluation model
-eval_model = pipeline("text-generation", model="mistralai/Mistral-7B-Instruct-v0.3", device=0)
+# Initialize evaluator
+evaluator = MedCiteEvaluator(
+    eval_model_name="mistralai/Mistral-7B-Instruct-v0.3", 
+    device=0
+)
 
-# Extract citation pairs from answer
+# Evaluate single answer
 answer_text = result['answer']
 cited_docs = result['cited_docs']
-statement_pairs = extract_statement_citation_pairs(answer_text)
 
-# Evaluate citation quality
-recalls = []
-precisions = []
+citation_results = evaluator.evaluate_citations(
+    answer_text=answer_text,
+    cited_docs=cited_docs,
+    verbose=True
+)
 
-for citations, statement in statement_pairs:
-    if citations:
-        # Evaluate recall: Does the cited document support the statement?
-        for doc_id in citations:
-            if doc_id in cited_docs:
-                doc_content = cited_docs[doc_id]['content']
-                recall_score = run_llm_recall(eval_model, doc_content, statement)
-                recalls.append(recall_score)
-                
-                # Evaluate precision: Does the statement align with the document?
-                prec_score = run_llm_prec(eval_model, doc_content, statement)
-                precisions.append(prec_score)
+print(f"Citation Recall: {citation_results['recall']:.3f}")
+print(f"Citation Precision: {citation_results['precision']:.3f}")
+print(f"Number of statements: {citation_results['num_statements']}")
 
-print(f"Citation Recall: {sum(recalls)/len(recalls) if recalls else 0:.3f}")
-print(f"Citation Precision: {sum(precisions)/len(precisions) if precisions else 0:.3f}")
+# Evaluate entire dataset
+results = evaluator.evaluate_dataset(
+    results_dir="/path/to/results",
+    dataset_name="bioasq",
+    verbose=False
+)
+
+# Print formatted results
+evaluator.print_results(results)
+
+# Example output:
+# ============================================================
+# MEDCITE EVALUATION RESULTS  
+# ============================================================
+# 
+# CITATION QUALITY:
+#    Recall:    0.8750
+#    Precision: 0.9200
+#    Evaluated: 8 files
+# 
+# ANSWER CHOICE ACCURACY:
+#    Accuracy:  0.7500
+#    Std Dev:   0.4330
+#    Evaluated: 8 files
+# ============================================================
+
+**Result File Format:**
+
+The evaluation system expects JSON files with the following structure:
+```python
+{
+    "answer": "Answer text with citations[1][2]...",
+    "answer_choice": "A",  # For multiple choice questions
+    "cited_docs": {
+        "1": {"content": "Document content...", "pmid": "12345"},
+        "2": {"content": "Another document...", "pmid": "67890"}
+    }
+}
 ```
+
+Files should be named as `test_0.json`, `test_1.json`, etc., corresponding to dataset question indices.
 
 #### Key Parameters
 
 - **citation_mode**: Citation generation strategy
-  - `"post_only"` (default): Add citations after answer generation
-  - `"pre_only"`: Generate citations during answer creation
-  - `"both"`: Combine both approaches
   - `None`: Disable citations (standard MedRAG)
+  - `"pre_only"`: Generate citations during answer creation (Post-Retrieval Generation, PRG)
+  - `"post_only"` : Add citations after answer generation (Post-Generation Citation, PGC)
+  - `"both"`: Combine both approaches (MedCite, Two-Pass Approach)
+  
 
 - **k1**: Number of documents for initial retrieval (default: 32)
 - **k2**: Number of additional documents for citation enhancement (default: 3)
 - **citation_rerank**: Whether to use LLM for reranking citations (default: False)
 - **retriever_name**: Retrieval method
-  - `"Hierarchical"`: BM25 + Cross-encoder reranking
+  - `"BM25"`: BM25
   - `"MedCPT"`: Biomedical dense retriever
   - `"RRF-2"`: BM25 + MedCPT fusion
   - `"RRF-4"`: Multi-retriever fusion
+  - `"Hierarchical"`: BM25 + Cross-encoder reranking
 
 #### Output Format
 
 The `medcite.answer()` function returns a tuple `(result, snippets, scores)` where:
 
 - **result**: Dictionary containing:
-  - `"answer"`: Final answer text with properly formatted citations
+  - `"answer"`: Final answer text with properly formatted sequential citations (e.g., "Treatment is effective[1]. Side effects are minimal[2][3].")
   - `"answer_choice"`: Selected option (A/B/C/D) for multiple choice questions
-  - `"cited_docs"`: Dictionary of referenced documents with metadata
-  - `"snippets"`: Original retrieved document snippets
+  - `"cited_docs"`: Dictionary mapping citation numbers to document information:
+    ```python
+    {
+        "1": {
+            "content": "Full text content of the cited document...",
+            "pmid": "12345678",
+            "title": "Document title",
+            "score": 0.95
+        },
+        "2": {
+            "content": "Another document content...",
+            "pmid": "87654321", 
+            "title": "Another document title",
+            "score": 0.87
+        }
+    }
+    ```
 
-- **snippets**: List of all retrieved document snippets
+- **snippets**: List of all retrieved document snippets (for reference)
 - **scores**: Retrieval relevance scores
+```
 
 ## Citation
-For the use of `MedRAG`, please consider citing
-```bibtex
-@inproceedings{xiong-etal-2024-benchmarking,
-    title = "Benchmarking Retrieval-Augmented Generation for Medicine",
-    author = "Xiong, Guangzhi  and
-      Jin, Qiao  and
-      Lu, Zhiyong  and
-      Zhang, Aidong",
-    editor = "Ku, Lun-Wei  and
-      Martins, Andre  and
-      Srikumar, Vivek",
-    booktitle = "Findings of the Association for Computational Linguistics ACL 2024",
-    month = aug,
-    year = "2024",
-    address = "Bangkok, Thailand and virtual meeting",
-    publisher = "Association for Computational Linguistics",
-    url = "https://aclanthology.org/2024.findings-acl.372",
-    pages = "6233--6251",
-    abstract = "While large language models (LLMs) have achieved state-of-the-art performance on a wide range of medical question answering (QA) tasks, they still face challenges with hallucinations and outdated knowledge. Retrieval-augmented generation (RAG) is a promising solution and has been widely adopted. However, a RAG system can involve multiple flexible components, and there is a lack of best practices regarding the optimal RAG setting for various medical purposes. To systematically evaluate such systems, we propose the Medical Information Retrieval-Augmented Generation Evaluation (MIRAGE), a first-of-its-kind benchmark including 7,663 questions from five medical QA datasets. Using MIRAGE, we conducted large-scale experiments with over 1.8 trillion prompt tokens on 41 combinations of different corpora, retrievers, and backbone LLMs through the MedRAG toolkit introduced in this work. Overall, MedRAG improves the accuracy of six different LLMs by up to 18{\%} over chain-of-thought prompting, elevating the performance of GPT-3.5 and Mixtral to GPT-4-level. Our results show that the combination of various medical corpora and retrievers achieves the best performance. In addition, we discovered a log-linear scaling property and the {``}lost-in-the-middle{''} effects in medical RAG. We believe our comprehensive evaluations can serve as practical guidelines for implementing RAG systems for medicine.",
-}
-```
+For the use of `MedCite`, please consider citing ...
 
-For the use of `i-MedRAG`, please consider citing
-```bibtex
-@inproceedings{xiong2024improving,
-  title={Improving retrieval-augmented generation in medicine with iterative follow-up questions},
-  author={Xiong, Guangzhi and Jin, Qiao and Wang, Xiao and Zhang, Minjia and Lu, Zhiyong and Zhang, Aidong},
-  booktitle={Biocomputing 2025: Proceedings of the Pacific Symposium},
-  pages={199--214},
-  year={2024},
-  organization={World Scientific}
-}
-```

@@ -575,7 +575,12 @@ class MedRAG:
 
         # Return if only pre-citation processing needed
         if self.citation_mode == "pre_only":
-            return result, snippets, scores
+            pre_result = {
+                "answer": answer_text,
+                "answer_choice": answer_choice,
+                "cited_docs": cited_docs
+            }
+            return pre_result, snippets, scores
 
         # Get additional citations through post-processing
         post_pairs, post_snippets, post_scores = self.add_citation( 
@@ -695,16 +700,19 @@ class MedRAG:
             final_answer += " "
 
         # Update result with final information
-        result["answer_text"] = final_answer.strip()
-        result["cited_docs"] = all_cited_docs
+        final_result = {
+            "answer": final_answer.strip(),
+            "answer_choice": answer_choice,
+            "cited_docs": all_cited_docs
+        }
 
         # Save results if directory provided
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
             with open(os.path.join(save_dir, "result.json"), 'w') as f:
-                json.dump(result, f, indent=4)
+                json.dump(final_result, f, indent=4)
 
-        return result, snippets, scores
+        return final_result, snippets, scores
 
 class CustomStoppingCriteria(StoppingCriteria):
     def __init__(self, stop_words, tokenizer, input_len=0):
