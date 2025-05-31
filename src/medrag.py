@@ -472,9 +472,9 @@ class MedRAG:
             
             # Filter doc IDs based on available snippets
             valid_doc_ids = [
-                str(idx*k + int(doc_id)) 
+                doc_id 
                 for doc_id in doc_ids
-                if 1 <= idx*k + int(doc_id) <= len(post_snippets)
+                if 1 <= int(doc_id) <= len(post_snippets)
             ]
             
             post_pairs.append([valid_doc_ids, statement])
@@ -538,18 +538,9 @@ class MedRAG:
 
         # Initialize result structure
         result = {
-            "output": output,
-            "answer": answer_text,
-            "answer_choice": answer_choice,
-            "snippets": snippets,
-            "post_answer": answer_text,
-            "statement_pairs": [],
-            "merged_statement_pairs": [],
-            "cited_docs": {},
-            "merged_cited_docs": {},
-            "post_pairs": [],
-            "post_snippets": [],
-            "post_scores": []
+            "generated_output": output,
+            "answer_text": answer_text,
+            "answer_choice": answer_choice
         }
 
         # Process citations in the answer text
@@ -562,8 +553,8 @@ class MedRAG:
             matches = citation_pattern.findall(statement)
             if matches:
                 citations = [int(match) for match in matches if 0 < int(match) <= num_snippets]
-                cleaned_statement = citation_pattern.sub('', statement).strip()
-                statement_pairs.append((citations, cleaned_statement))
+                # Keep original statement with citations for now, will clean later
+                statement_pairs.append((citations, statement))
             else:
                 statement_pairs.append(([], statement))
 
@@ -579,13 +570,8 @@ class MedRAG:
                         'pmid': doc['PMID']
                     }
 
-        # Update result with initial citations
-        result.update({
-            "statement_pairs": statement_pairs,
-            "cited_docs": cited_docs,
-            "merged_cited_docs": cited_docs.copy(),
-            "merged_statement_pairs": [(list(map(str, doc_ids)), stmt) for doc_ids, stmt in statement_pairs]
-        })
+        # Add citations to result
+        result["cited_docs"] = cited_docs
 
         # Return if only pre-citation processing needed
         if self.citation_mode == "pre_only":
@@ -600,55 +586,117 @@ class MedRAG:
             statement_pairs=statement_pairs
         )
 
-        # Update result with post-processing data
-        result.update({
-            "post_pairs": post_pairs,
-            "post_snippets": post_snippets,
-            "post_scores": post_scores
-        })
-
         # Merge citations using PMID mapping
         pmid_map = {}
-        merged_statement_pairs = result["merged_statement_pairs"]
-        merged_cited_docs = result["merged_cited_docs"]
+        all_cited_docs = {}
+        doc_counter = 1
         
-        # Process original citations to build PMID map
-        for doc_id in cited_docs:
-            if doc_id in cited_docs:  # Preserve original check
-                pmid_map[cited_docs[doc_id]['pmid']] = doc_id
-
-        # Process additional citations
-        offset = len(cited_docs) + 1
-        cnt = 0
+        # First, collect all unique documents based on PMID
+        # From original snippets
+        for doc_ids, _ in statement_pairs:
+            for doc_id in doc_ids:
+                if 0 < doc_id <= num_snippets:
+                    doc = snippets[doc_id-1]
+                    pmid = doc['PMID']
+                    if pmid not in pmid_map:
+                        pmid_map[pmid] = str(doc_counter)
+                        all_cited_docs[str(doc_counter)] = {
+                            'title': doc['title'],
+                            'content': doc['content'],
+                            'pmid': pmid
+                        }
+                        doc_counter += 1
         
+        # From additional post-processing snippets
         for i, (doc_ids, statement) in enumerate(post_pairs):
             for doc_id in doc_ids:
-                doc = post_snippets[int(doc_id)-1]
-                pmid = doc["PMID"]
-                if pmid in pmid_map:
+                if 1 <= int(doc_id) <= len(post_snippets):
+                    doc = post_snippets[int(doc_id)-1]
+                    pmid = doc["PMID"]
+                    if pmid not in pmid_map:
+                        pmid_map[pmid] = str(doc_counter)
+                        all_cited_docs[str(doc_counter)] = {
+                            'title': doc['title'],
+                            'content': doc['content'],
+                            'pmid': pmid
+                        }
+                        doc_counter += 1
+        
+        # Now rebuild statement pairs with correct mappings
+        final_statement_pairs = []
+        
+        # Process original statement pairs
+        for doc_ids, statement in statement_pairs:
+            new_doc_ids = []
+            for doc_id in doc_ids:
+                if 0 < doc_id <= num_snippets:
+                    doc = snippets[doc_id-1]
+                    pmid = doc['PMID']
+                    new_doc_ids.append(pmid_map[pmid])
+            final_statement_pairs.append((new_doc_ids, statement))
+        
+        # Process additional citations from post-processing
+        for i, (doc_ids, statement) in enumerate(post_pairs):
+            additional_docs = []
+            for doc_id in doc_ids:
+                if 1 <= int(doc_id) <= len(post_snippets):
+                    doc = post_snippets[int(doc_id)-1]
+                    pmid = doc["PMID"]
                     mapped_id = pmid_map[pmid]
-                    if mapped_id not in merged_statement_pairs[i][0]:
-                        merged_statement_pairs[i][0].append(mapped_id)
-                else:
-                    new_id = str(cnt + offset)
-                    pmid_map[pmid] = new_id
-                    merged_statement_pairs[i][0].append(new_id)
-                    merged_cited_docs[new_id] = {
-                        'title': doc['title'],
-                        'content': doc['content'],
-                        'pmid': pmid
-                    }
-                    cnt += 1
+                    if mapped_id not in final_statement_pairs[i][0]:
+                        additional_docs.append(mapped_id)
+            
+            # Add additional documents to corresponding statement
+            if i < len(final_statement_pairs) and additional_docs:
+                final_statement_pairs[i] = (final_statement_pairs[i][0] + additional_docs, final_statement_pairs[i][1])
 
         # Construct final answer with citations
-        post_answer = ''
-        for doc_ids, statement in merged_statement_pairs:
-            post_answer += statement
-            for doc_id in sorted(set(doc_ids)):
-                post_answer = post_answer + "[" + str(doc_id) + "]"
-            post_answer += " "
+        final_answer = ''
+        citation_pattern = re.compile(r'\[(\d+)\]')
+        
+        for doc_ids, statement in final_statement_pairs:
+            # Strategy: Remove all citations and clean up spacing/punctuation
+            cleaned_statement = statement
+            
+            # Remove all citations
+            cleaned_statement = citation_pattern.sub('', cleaned_statement)
+            
+            # Clean up spacing issues
+            # Handle cases like "Document  finds" -> "Document finds"
+            cleaned_statement = re.sub(r'\s+', ' ', cleaned_statement)
+            
+            # Clean up punctuation issues
+            # Handle cases like " ." -> "."
+            cleaned_statement = re.sub(r'\s+([.!?])', r'\1', cleaned_statement)
+            
+            # Handle cases like ".  " -> ". "
+            cleaned_statement = re.sub(r'([.!?])\s+', r'\1 ', cleaned_statement)
+            
+            # Trim and ensure single space at end for concatenation
+            cleaned_statement = cleaned_statement.strip()
+            
+            # Add cleaned statement
+            final_answer += cleaned_statement
+            
+            # Add new citations at the end of the statement (before final punctuation if present)
+            if doc_ids:
+                # Check if statement ends with punctuation
+                if cleaned_statement and cleaned_statement[-1] in '.!?':
+                    # Remove last punctuation, add citations, then add punctuation back
+                    final_answer = final_answer[:-1]  # Remove last char (punctuation)
+                    for doc_id in sorted(set(doc_ids)):
+                        final_answer += "[" + str(doc_id) + "]"
+                    final_answer += cleaned_statement[-1]  # Add punctuation back
+                else:
+                    # No ending punctuation, just add citations
+                    for doc_id in sorted(set(doc_ids)):
+                        final_answer += "[" + str(doc_id) + "]"
+            
+            final_answer += " "
 
-        result["post_answer"] = post_answer
+        # Update result with final information
+        result["answer_text"] = final_answer.strip()
+        result["cited_docs"] = all_cited_docs
 
         # Save results if directory provided
         if save_dir:

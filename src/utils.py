@@ -252,13 +252,9 @@ class RetrievalSystem:
         else:
             self.docExt = None
         if self.retriever_name == "Hierarchical":
-            print("start importing retrievers")
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
-            print("import finish")
             self.retrieval_model = AutoModelForSequenceClassification.from_pretrained("facebook/bart-large-mnli", cache_dir=db_dir)
-            print("retriever_mode ready")
             self.retrieval_tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-mnli", cache_dir=db_dir)
-            print("tokenizer ready")
             if torch.cuda.is_available():
                 self.retrieval_model = self.retrieval_model.cuda()
             self.retrieval_model.eval()
@@ -457,3 +453,24 @@ class DocExtracter:
                 item = self.dict[i] if type(i) == str else self.dict[i["id"]]
                 output.append(json.loads(open(os.path.join(self.db_dir, item["fpath"])).read().strip().split('\n')[item["index"]]))
         return output
+    
+class QADataset:
+
+    def __init__(self, data, dir="."):
+        self.data = data.lower().split("_")[0]
+        benchmark = json.load(open(os.path.join(dir, "benchmark.json")))
+        if self.data not in benchmark:
+            raise KeyError("{:s} not supported".format(data))
+        self.dataset = benchmark[self.data]
+        self.index = sorted(self.dataset.keys())
+
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, key):
+        if type(key) == int:
+            return self.dataset[self.index[key]]
+        elif type(key) == slice:
+            return [self.__getitem__(i) for i in range(self.__len__())[key]]
+        else:
+            raise KeyError("Key type not supported.")
