@@ -157,7 +157,9 @@ python src/eval.py --results_dir /path/to/results --verbose
 
 # Save results to JSON file
 python src/eval.py --results_dir /path/to/results --output evaluation_results.json
+
 ```
+```python
 
 # Example output:
 # ============================================================
@@ -174,7 +176,7 @@ python src/eval.py --results_dir /path/to/results --output evaluation_results.js
 #    Std Dev:   0.4330
 #    Evaluated: 8 files
 # ============================================================
-
+```
 **Result File Format:**
 
 The evaluation system expects JSON files with the following structure:
