@@ -159,40 +159,6 @@ python src/eval.py --results_dir /path/to/results --verbose
 python src/eval.py --results_dir /path/to/results --output evaluation_results.json
 ```
 
-**Programmatic Evaluation:**
-```python
-from src.eval import MedCiteEvaluator
-
-# Initialize evaluator
-evaluator = MedCiteEvaluator(
-    eval_model_name="mistralai/Mistral-7B-Instruct-v0.3", 
-    device=0
-)
-
-# Evaluate single answer
-answer_text = result['answer']
-cited_docs = result['cited_docs']
-
-citation_results = evaluator.evaluate_citations(
-    answer_text=answer_text,
-    cited_docs=cited_docs,
-    verbose=True
-)
-
-print(f"Citation Recall: {citation_results['recall']:.3f}")
-print(f"Citation Precision: {citation_results['precision']:.3f}")
-print(f"Number of statements: {citation_results['num_statements']}")
-
-# Evaluate entire dataset
-results = evaluator.evaluate_dataset(
-    results_dir="/path/to/results",
-    dataset_name="bioasq",
-    verbose=False
-)
-
-# Print formatted results
-evaluator.print_results(results)
-
 # Example output:
 # ============================================================
 # MEDCITE EVALUATION RESULTS  
